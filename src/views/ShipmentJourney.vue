@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import {computed, ref, watch} from "vue";
+import {computed, ref} from "vue";
 import moment from "moment";
 import type {StopPoint} from "@/types/StopPoint.ts";
-import {formatDuration, formatTime} from "@/helpers/formatTime.ts";
+import {
+  formatDuration,
+  formatTime,
+  getDurationBetween,
+  getTravelMinutes
+} from "@/helpers/formatTime.ts";
 
 // Base data (speed is in km/h and distance is in km)
 const truckSpeed = 120;
@@ -11,7 +16,7 @@ const baseStopPoints: StopPoint[] = [
     name: "Point A",
     distanceFromPreviousPoint: 0,
     totalDistance: 0,
-    departureTime: moment().hour(8).minute(0).second(0).toDate(), // today 08:00
+    departureTime: moment().hour(8).minute(0).second(0).toDate(), // today 08:00AM
   },
   {
     name: "Point B",
@@ -26,7 +31,6 @@ const baseStopPoints: StopPoint[] = [
 
 // State
 const currentPointIndex = ref(0);
-const journeyProgress = ref(0);
 
 // Methods
 const goToNextPoint = () => {
@@ -36,10 +40,6 @@ const goToPreviousPoint = () => {
   currentPointIndex.value--;
 }
 
-const getDotColor = (index: number) => {
-  return index <= currentPointIndex.value ? 'primary' : '';
-};
-
 // Return the travel time to the next point
 const travelTimeToNext = (index: number): string => {
   if (index >= computedStopPoints.value.length - 1) return "";
@@ -47,23 +47,12 @@ const travelTimeToNext = (index: number): string => {
 
   if (!nextPoint) return "";
 
-  const minutes = (nextPoint.distanceFromPreviousPoint / truckSpeed) * 60;
+  const minutes = getTravelMinutes(nextPoint.distanceFromPreviousPoint, truckSpeed);
 
   return formatDuration(minutes);
 };
 
-// Return the travel time from the beginning to the current point
-const getCurrentDeliveryDuration = () => {
-  const currentPoint = computedStopPoints.value[currentPointIndex.value];
-  if (!currentPoint) return "";
-
-  const start = moment(journeyStart.value);
-  const end = moment(currentPoint.departureTime || currentPoint.arrivalTime);
-
-  return formatDuration(end.diff(start, 'minutes'));
-}
-
-// Computed (will be updated when baseStopPoints or truck speed change)
+// Computed
 const computedStopPoints = computed<StopPoint[]>(() => {
   const result: StopPoint[] = [];
 
@@ -74,6 +63,7 @@ const computedStopPoints = computed<StopPoint[]>(() => {
       return;
     }
 
+    // Get the previous point
     const prev = result[index - 1];
 
     if(prev) {
@@ -83,7 +73,7 @@ const computedStopPoints = computed<StopPoint[]>(() => {
 
       // Calculate arrival and departure times
       const prevDeparture = moment(prev.departureTime);
-      const travelMinutes = (point.distanceFromPreviousPoint / truckSpeed) * 60;
+      const travelMinutes = getTravelMinutes(point.distanceFromPreviousPoint, truckSpeed);
 
       const arrival = prevDeparture.clone().add(travelMinutes, "minutes");
       const departure = point.stopDuration
@@ -107,34 +97,43 @@ const computedStopPoints = computed<StopPoint[]>(() => {
   return result;
 });
 
-const journeyStart = computed(() => computedStopPoints.value[0]?.departureTime);
+const journeyStart = computed(() => computedStopPoints.value[0]?.departureTime ?? null);
 
 const journeyEnd = computed(() => {
   const last = computedStopPoints.value[computedStopPoints.value.length - 1];
-  return last?.departureTime || last?.arrivalTime;
+
+  return last?.arrivalTime;
 });
 
 const journeyDuration = computed(() => {
   if (!journeyStart.value || !journeyEnd.value) return "";
 
-  return formatDuration(moment(journeyEnd.value).diff(moment(journeyStart.value), "minutes"));
+  return formatDuration(getDurationBetween(journeyStart.value, journeyEnd.value));
 });
 
-// Watcher
-watch(currentPointIndex, (newIndex) => {
-  const start = moment(journeyStart.value);
-  const end = moment(journeyEnd.value);
+const journeyProgress = computed(() => {
+  if (!journeyStart.value || !journeyEnd.value) return 0;
 
-  const totalMinutes = end.diff(start, 'minutes');
+  const totalMinutes = getDurationBetween(journeyStart.value, journeyEnd.value);
 
-  // Elapsed time since the start of the journey
-  const currentPoint = computedStopPoints.value[newIndex];
-  if (!currentPoint) return;
+  const currentPoint = computedStopPoints.value[currentPointIndex.value];
+  if (!currentPoint) return 0;
 
-  const elapsedMinutes = moment(currentPoint.departureTime || currentPoint.arrivalTime).diff(start, 'minutes');
+  const elapsedMinutes = moment(currentPoint.departureTime || currentPoint.arrivalTime)
+    .diff(journeyStart.value, "minutes");
 
-  journeyProgress.value = Math.min(100, (elapsedMinutes / totalMinutes) * 100);
-})
+  return Math.min(100, (elapsedMinutes / totalMinutes) * 100);
+});
+
+const currentDeliveryDuration = computed(() => {
+  const currentPoint = computedStopPoints.value[currentPointIndex.value];
+  if (!currentPoint || !journeyStart.value) return "";
+
+  return formatDuration(
+    moment(currentPoint.departureTime || currentPoint.arrivalTime)
+      .diff(moment(journeyStart.value), 'minutes')
+  );
+});
 </script>
 
 <template>
@@ -143,7 +142,7 @@ watch(currentPointIndex, (newIndex) => {
   <v-timeline direction="horizontal" line-inset="12" side="end">
     <template v-for="(point, index) in computedStopPoints" :key="index">
       <v-timeline-item
-        :dot-color="getDotColor(index)"
+        :dot-color="index <= currentPointIndex ? 'primary' : ''"
       >
         <!-- Distance at top -->
         <template v-slot:opposite>
@@ -151,9 +150,11 @@ watch(currentPointIndex, (newIndex) => {
         </template>
 
         <!-- Times at bottom -->
-        <div>
+        <div class="text-center">
           <span v-if="point.arrivalTime && point.departureTime && point.arrivalTime.getTime() !== point.departureTime.getTime()">
-            Arrival time: <strong>{{ formatTime(point.arrivalTime) }}</strong> → Departure time: <strong>{{ formatTime(point.departureTime) }}</strong>
+            Arrival time: <strong>{{ formatTime(point.arrivalTime) }}</strong> → Departure time: <strong>{{ formatTime(point.departureTime) }}</strong><br />
+
+            <template v-if="point.stopDuration">Stop duration: <strong>{{ formatDuration(point.stopDuration || 0) }}</strong></template>
           </span>
             <span v-else-if="point.arrivalTime">
               Arrival time: <strong>{{ formatTime(point.arrivalTime) }}</strong>
@@ -175,9 +176,7 @@ watch(currentPointIndex, (newIndex) => {
         class="travel-time"
         hide-dot
       >
-        <template v-slot:opposite>
-          {{ travelTimeToNext(index) }}
-        </template>
+        Travel duration: <strong>{{ travelTimeToNext(index) }}</strong>
       </v-timeline-item>
     </template>
   </v-timeline>
@@ -187,7 +186,7 @@ watch(currentPointIndex, (newIndex) => {
 
   <div class="d-flex align-center justify-center mt-10">
     <!-- Previous button or blank space -->
-    <div style="width: 200px; text-align: center;">
+    <div class="btn-container">
       <v-btn
         v-if="currentPointIndex > 0"
         @click="goToPreviousPoint"
@@ -207,12 +206,12 @@ watch(currentPointIndex, (newIndex) => {
       style="width: 250px; margin: 0 16px;"
     >
       <template v-slot:default>
-        Current delivery duration: {{ getCurrentDeliveryDuration() }}
+        Current delivery duration: {{ currentDeliveryDuration }}
       </template>
     </v-progress-linear>
 
     <!-- Next button or blank space -->
-    <div style="width: 200px; text-align: center;">
+    <div class="btn-container">
       <v-btn
         v-if="currentPointIndex < computedStopPoints.length - 1"
         @click="goToNextPoint"
@@ -226,5 +225,8 @@ watch(currentPointIndex, (newIndex) => {
 </template>
 
 <style scoped>
-
+  .btn-container {
+    width: 200px;
+    text-align: center;
+  }
 </style>

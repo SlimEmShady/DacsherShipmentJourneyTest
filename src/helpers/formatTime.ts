@@ -11,3 +11,11 @@ export const formatDuration = (minutes: number): string => {
 
   return hours > 0 ? `${hours}h${mins.toString().padStart(2, "0")}` : `${mins}min`;
 }
+
+export const getTravelMinutes = (distance: number, speed: number) => {
+  return (distance / speed) * 60;
+}
+
+export const getDurationBetween = (start: Date, end: Date) => {
+  return moment(end).diff(moment(start), "minutes");
+}
